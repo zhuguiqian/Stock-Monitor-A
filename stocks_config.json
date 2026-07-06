@@ -1,0 +1,11 @@
+{
+    "stocks": [
+        {
+            "code": "002152",
+            "name": "广电运通",
+            "alert_type": 1,
+            "target": 9.3
+        }
+    ],
+    "refresh_rate": 10
+}
