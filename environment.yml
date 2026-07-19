@@ -1,0 +1,9 @@
+name: stock-monitor-a
+channels:
+  - defaults
+dependencies:
+  - python=3.11
+  - requests
+  - pip
+  - pip:
+      - PyQt5

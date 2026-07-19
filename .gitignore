@@ -7,3 +7,6 @@ __pycache__/
 .vscode/
 venv/
 .venv/
+.conda_env/
+stocks_config.json
+email_config.json
