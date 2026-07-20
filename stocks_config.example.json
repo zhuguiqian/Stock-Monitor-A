@@ -3,6 +3,7 @@
         {
             "code": "002152",
             "name": "广电运通",
+            "hidden": false,
             "alerts": [
                 {
                     "alert_type": 0,

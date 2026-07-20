@@ -381,6 +381,7 @@ class AddStockDialog(QDialog):
         return {
             'code': self.selected_code,
             'name': self.selected_name,
+            'hidden': False,
             'alerts': []
         }
 
@@ -607,6 +608,8 @@ class StockMonitorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.stocks = []
+        self.displayed_stocks = []
+        self.show_hidden_stocks = False
         self.refresh_rate = 60
         self.email_config = self.default_email_config()
         self.email_workers = []
@@ -644,6 +647,7 @@ class StockMonitorApp(QMainWindow):
         normalized = {
             'code': stock.get('code', ''),
             'name': stock.get('name', ''),
+            'hidden': bool(stock.get('hidden', False)),
             'alerts': []
         }
 
@@ -726,9 +730,17 @@ class StockMonitorApp(QMainWindow):
         self.remove_btn.clicked.connect(self.remove_stock)
         self.remove_btn.setStyleSheet("background-color: #f38ba8; color: #11111b;")
 
+        self.hide_btn = QPushButton("隐藏选中")
+        self.hide_btn.clicked.connect(self.toggle_selected_stock_hidden)
+        self.hide_btn.setStyleSheet("background-color: #fab387; color: #11111b;")
+
         self.email_btn = QPushButton("✉️ 邮件设置")
         self.email_btn.clicked.connect(self.edit_email_settings)
         self.email_btn.setStyleSheet("background-color: #a6e3a1; color: #11111b;")
+
+        self.show_hidden_check = QCheckBox("显示隐藏股票")
+        self.show_hidden_check.setChecked(self.show_hidden_stocks)
+        self.show_hidden_check.stateChanged.connect(self.on_show_hidden_changed)
         
         self.refresh_rate_spin = QSpinBox()
         self.refresh_rate_spin.setRange(3, 3600)
@@ -740,21 +752,24 @@ class StockMonitorApp(QMainWindow):
         control_layout.addWidget(self.add_btn)
         control_layout.addWidget(self.alert_btn)
         control_layout.addWidget(self.remove_btn)
+        control_layout.addWidget(self.hide_btn)
         control_layout.addWidget(self.email_btn)
+        control_layout.addWidget(self.show_hidden_check)
         control_layout.addStretch()
         control_layout.addWidget(QLabel("刷新频率:"))
         control_layout.addWidget(self.refresh_rate_spin)
         
         main_layout.addLayout(control_layout)
         
-        self.table = QTableWidget(0, 7)
-        self.table.setHorizontalHeaderLabels(["代码", "股票名称", "当前价", "涨跌幅", "提醒条件", "邮件", "状态"])
+        self.table = QTableWidget(0, 6)
+        self.table.setHorizontalHeaderLabels(["代码", "股票名称", "当前价", "涨跌幅", "提醒条件", "状态"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setEditTriggers(QTableWidget.NoEditTriggers)
         self.table.setShowGrid(False)
         self.table.verticalHeader().setVisible(False)
         self.table.itemDoubleClicked.connect(self.edit_alert)
+        self.table.itemSelectionChanged.connect(self.update_hide_button_text)
         
         main_layout.addWidget(self.table)
         
@@ -768,6 +783,30 @@ class StockMonitorApp(QMainWindow):
             self.timer.setInterval(self.refresh_rate * 1000)
         self.save_config()
         self.statusBar().showMessage(f"刷新频率已更新为 {val} 秒")
+
+    def get_visible_stocks(self):
+        return [stock for stock in self.stocks if self.show_hidden_stocks or not stock.get('hidden', False)]
+
+    def get_selected_stock(self):
+        selected = self.table.selectedItems()
+        if not selected:
+            return None
+        row = selected[0].row()
+        if row < 0 or row >= len(self.displayed_stocks):
+            return None
+        return self.displayed_stocks[row]
+
+    def on_show_hidden_changed(self, state):
+        self.show_hidden_stocks = state == Qt.Checked
+        self.update_table_display()
+        self.fetch_data()
+
+    def update_hide_button_text(self):
+        stock = self.get_selected_stock()
+        if stock and stock.get('hidden', False):
+            self.hide_btn.setText("恢复显示")
+        else:
+            self.hide_btn.setText("隐藏选中")
 
     def edit_email_settings(self):
         dialog = EmailSettingsDialog(self.email_config, self)
@@ -794,17 +833,13 @@ class StockMonitorApp(QMainWindow):
             self.fetch_data()
             
     def edit_alert(self):
-        selected = self.table.selectedItems()
-        if not selected: 
+        stock_config = self.get_selected_stock()
+        if not stock_config:
             QMessageBox.warning(self, "提示", "请先在列表中选中一只股票！")
             return
-            
-        row = selected[0].row()
-        code = self.table.item(row, 0).text()
-        name = self.table.item(row, 1).text()
-        
-        stock_config = next((s for s in self.stocks if s['code'] == code), None)
-        if not stock_config: return
+
+        code = stock_config.get('code', '')
+        name = stock_config.get('name', '')
         
         dialog = EditAlertDialog(name, code, stock_config, self)
         if dialog.exec_() == QDialog.Accepted:
@@ -814,20 +849,33 @@ class StockMonitorApp(QMainWindow):
             self.fetch_data()
 
     def remove_stock(self):
-        selected = self.table.selectedItems()
-        if not selected: return
-        row = selected[0].row()
-        code = self.table.item(row, 0).text()
-        
+        stock = self.get_selected_stock()
+        if not stock:
+            return
+        code = stock.get('code', '')
         self.stocks = [s for s in self.stocks if s['code'] != code]
         self.save_config()
         self.update_table_display()
         self.fetch_data()
 
+    def toggle_selected_stock_hidden(self):
+        stock = self.get_selected_stock()
+        if not stock:
+            QMessageBox.warning(self, "提示", "请先在列表中选中一只股票！")
+            return
+
+        stock['hidden'] = not stock.get('hidden', False)
+        self.save_config()
+        self.update_table_display()
+        self.fetch_data()
+        status = "已隐藏" if stock.get('hidden') else "已恢复显示"
+        self.statusBar().showMessage(f"{stock.get('name', stock.get('code', ''))} {status}")
+
     def update_table_display(self):
-        self.table.setRowCount(len(self.stocks))
+        self.displayed_stocks = self.get_visible_stocks()
+        self.table.setRowCount(len(self.displayed_stocks))
         
-        for i, stock in enumerate(self.stocks):
+        for i, stock in enumerate(self.displayed_stocks):
             self.table.setItem(i, 0, QTableWidgetItem(stock['code']))
             
             # 使用保存的名字，防止加载出空数据
@@ -840,28 +888,33 @@ class StockMonitorApp(QMainWindow):
             active_alerts = [alert for alert in stock.get('alerts', []) if alert.get('active', True) and alert.get('target', -1) > 0]
             if not active_alerts:
                 self.table.setItem(i, 4, QTableWidgetItem("未设置提醒"))
-                self.table.setItem(i, 5, QTableWidgetItem("0"))
             else:
                 preview = "；".join(alert_to_text(alert) for alert in active_alerts[:2])
                 if len(active_alerts) > 2:
                     preview += f"；另 {len(active_alerts) - 2} 条"
-                email_count = sum(1 for alert in active_alerts if alert.get('email_enabled'))
                 self.table.setItem(i, 4, QTableWidgetItem(preview))
-                self.table.setItem(i, 5, QTableWidgetItem(f"{email_count}/{len(active_alerts)}"))
             
-            status_text = f"正在监控（{len(active_alerts)}条提醒）" if active_alerts else "正在监控"
+            if stock.get('hidden', False):
+                status_text = "已隐藏"
+            else:
+                status_text = f"正在监控（{len(active_alerts)}条提醒）" if active_alerts else "正在监控"
             status_item = QTableWidgetItem(status_text)
-            status_item.setForeground(QColor('#a6e3a1'))
-            self.table.setItem(i, 6, status_item)
+            status_item.setForeground(QColor('#6c7086') if stock.get('hidden', False) else QColor('#a6e3a1'))
+            self.table.setItem(i, 5, status_item)
             
             # 居中对齐
-            for col in range(7):
+            for col in range(6):
                 item = self.table.item(i, col)
                 if item:
                     item.setTextAlignment(Qt.AlignCenter)
+        self.update_hide_button_text()
 
     def fetch_data(self):
-        if not self.stocks:
+        visible_stocks = self.get_visible_stocks()
+        if not visible_stocks:
+            self.displayed_stocks = []
+            self.table.setRowCount(0)
+            self.statusBar().showMessage("没有可显示的股票。勾选“显示隐藏股票”可管理隐藏项。")
             return
 
         market_status = get_market_status()
@@ -871,7 +924,7 @@ class StockMonitorApp(QMainWindow):
             return
 
         self.timer.setInterval(self.refresh_rate * 1000)
-        self.fetcher = StockFetcher(self.stocks)
+        self.fetcher = StockFetcher(visible_stocks)
         self.fetcher.data_fetched.connect(self.on_data_fetched)
         self.fetcher.error_occurred.connect(self.on_fetch_error)
         self.fetcher.start()
@@ -894,7 +947,7 @@ class StockMonitorApp(QMainWindow):
             status_item = QTableWidgetItem(f"{market_status['label']}，等待开盘")
             status_item.setForeground(QColor('#f9e2af'))
             status_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 6, status_item)
+            self.table.setItem(row, 5, status_item)
 
     def on_fetch_error(self, err):
         now_str = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -906,9 +959,10 @@ class StockMonitorApp(QMainWindow):
         self.statusBar().showMessage(f"交易中，行情数据已更新 - 最新同步时间: {now_str}")
         
         for row in range(self.table.rowCount()):
-            code_item = self.table.item(row, 0)
-            if not code_item: continue
-            code = code_item.text()
+            if row >= len(self.displayed_stocks):
+                continue
+            stock_config = self.displayed_stocks[row]
+            code = stock_config.get('code', '')
             
             if code in results:
                 data = results[code]
@@ -942,7 +996,6 @@ class StockMonitorApp(QMainWindow):
                 self.table.setItem(row, 3, change_item)
                 
                 # 检查提醒条件
-                stock_config = next((s for s in self.stocks if s['code'] == code), None)
                 if stock_config:
                     self.check_alert(stock_config, data, row)
 
@@ -1026,7 +1079,7 @@ class StockMonitorApp(QMainWindow):
             status_item.setForeground(QColor('#f9e2af'))
             status_item.setFont(QFont("Segoe UI", 10, QFont.Bold))
             status_item.setTextAlignment(Qt.AlignCenter)
-            self.table.setItem(row, 6, status_item)
+            self.table.setItem(row, 5, status_item)
             
             self.save_config()
 
@@ -1034,14 +1087,10 @@ class StockMonitorApp(QMainWindow):
             cond_text = "未设置提醒" if not active_alerts else "；".join(alert_to_text(alert) for alert in active_alerts[:2])
             if len(active_alerts) > 2:
                 cond_text += f"；另 {len(active_alerts) - 2} 条"
-            email_count = sum(1 for alert in active_alerts if alert.get('email_enabled'))
             cond_item = QTableWidgetItem("未设置提醒")
             cond_item.setText(cond_text)
             cond_item.setTextAlignment(Qt.AlignCenter)
-            target_item = QTableWidgetItem(f"{email_count}/{len(active_alerts)}" if active_alerts else "0")
-            target_item.setTextAlignment(Qt.AlignCenter)
             self.table.setItem(row, 4, cond_item)
-            self.table.setItem(row, 5, target_item)
 
             for msg in triggered_messages:
                 alert_box = QMessageBox(self)
