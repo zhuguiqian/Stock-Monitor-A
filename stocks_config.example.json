@@ -15,5 +15,6 @@
             ]
         }
     ],
+    "alert_history": [],
     "refresh_rate": 10
 }

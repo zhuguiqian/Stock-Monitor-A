@@ -129,6 +129,22 @@ def alert_to_text(alert):
     status_text = "" if alert.get('active', True) else " / 已停用"
     return f"{label} {alert.get('target', -1):g} ({email_text}{status_text})"
 
+def alert_type_name(alert_type):
+    return ALERT_TYPES[alert_type] if 0 <= alert_type < len(ALERT_TYPES) else "未知条件"
+
+def normalize_alert_history(record):
+    return {
+        'triggered_at': record.get('triggered_at', ''),
+        'code': record.get('code', ''),
+        'name': record.get('name', ''),
+        'alert_type': int(record.get('alert_type', 0)),
+        'target': float(record.get('target', -1)),
+        'price': float(record.get('price', 0)),
+        'change_percent': float(record.get('change_percent', 0)),
+        'email_enabled': bool(record.get('email_enabled', False)),
+        'message': record.get('message', '')
+    }
+
 def next_trading_day_open(now):
     candidate = now + datetime.timedelta(days=1)
     while candidate.weekday() >= 5:
@@ -604,12 +620,80 @@ class EmailSettingsDialog(QDialog):
             'subject_prefix': self.subject_prefix.text().strip() or 'A股行情提醒'
         }
 
+class AlertHistoryDialog(QDialog):
+    def __init__(self, history, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("提醒记录")
+        self.resize(980, 520)
+        self.history = [normalize_alert_history(record) for record in history]
+        self.is_cleared = False
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(12)
+        layout.setContentsMargins(15, 15, 15, 15)
+
+        self.table = QTableWidget(0, 9, self)
+        self.table.setHorizontalHeaderLabels(["触发时间", "代码", "股票名称", "提醒类型", "阈值", "触发价", "涨跌幅", "邮件", "消息"])
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.table.setShowGrid(False)
+        self.table.verticalHeader().setVisible(False)
+        layout.addWidget(self.table)
+
+        btn_layout = QHBoxLayout()
+        self.clear_btn = QPushButton("清空记录", self)
+        self.clear_btn.setStyleSheet("background-color: #f38ba8; color: #11111b;")
+        self.clear_btn.clicked.connect(self.clear_history)
+
+        self.close_btn = QPushButton("关闭", self)
+        self.close_btn.setStyleSheet("background-color: #6c7086; color: #11111b;")
+        self.close_btn.clicked.connect(self.accept)
+
+        btn_layout.addWidget(self.clear_btn)
+        btn_layout.addStretch()
+        btn_layout.addWidget(self.close_btn)
+        layout.addLayout(btn_layout)
+
+        self.refresh_table()
+
+    def refresh_table(self):
+        records = list(reversed(self.history))
+        self.table.setRowCount(len(records))
+        for row, record in enumerate(records):
+            values = [
+                record.get('triggered_at', ''),
+                record.get('code', ''),
+                record.get('name', ''),
+                alert_type_name(record.get('alert_type', 0)),
+                f"{record.get('target', -1):g}",
+                f"{record.get('price', 0):.2f}",
+                f"{record.get('change_percent', 0):+.2f}%",
+                "是" if record.get('email_enabled') else "否",
+                record.get('message', '')
+            ]
+            for col, value in enumerate(values):
+                item = QTableWidgetItem(value)
+                item.setTextAlignment(Qt.AlignCenter if col != 8 else Qt.AlignVCenter | Qt.AlignLeft)
+                self.table.setItem(row, col, item)
+
+    def clear_history(self):
+        if not self.history:
+            return
+        confirm = QMessageBox.question(self, "确认清空", "确定要清空所有提醒记录吗？")
+        if confirm != QMessageBox.Yes:
+            return
+        self.history = []
+        self.is_cleared = True
+        self.refresh_table()
+
 class StockMonitorApp(QMainWindow):
     def __init__(self):
         super().__init__()
         self.stocks = []
         self.displayed_stocks = []
         self.show_hidden_stocks = False
+        self.alert_history = []
         self.refresh_rate = 60
         self.email_config = self.default_email_config()
         self.email_workers = []
@@ -684,12 +768,14 @@ class StockMonitorApp(QMainWindow):
                 with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
                     data = json.load(f)
                     self.stocks = [self.normalize_stock_config(stock) for stock in data.get('stocks', [])]
+                    self.alert_history = [normalize_alert_history(record) for record in data.get('alert_history', [])]
                     self.refresh_rate = data.get('refresh_rate', 60)
                     if 'email' in data:
                         legacy_email_config = data.get('email', {})
                         self.email_config = self.normalize_email_config(legacy_email_config)
             except:
                 self.stocks = []
+                self.alert_history = []
                 self.email_config = self.default_email_config()
 
         if os.path.exists(EMAIL_CONFIG_FILE):
@@ -704,6 +790,7 @@ class StockMonitorApp(QMainWindow):
         with open(CONFIG_FILE, 'w', encoding='utf-8') as f:
             json.dump({
                 'stocks': self.stocks,
+                'alert_history': self.alert_history,
                 'refresh_rate': self.refresh_rate
             }, f, ensure_ascii=False, indent=4)
 
@@ -725,6 +812,10 @@ class StockMonitorApp(QMainWindow):
         self.alert_btn = QPushButton("🔔 设置提醒")
         self.alert_btn.clicked.connect(self.edit_alert)
         self.alert_btn.setStyleSheet("background-color: #cba6f7; color: #11111b;")
+
+        self.history_btn = QPushButton("提醒记录")
+        self.history_btn.clicked.connect(self.show_alert_history)
+        self.history_btn.setStyleSheet("background-color: #74c7ec; color: #11111b;")
         
         self.remove_btn = QPushButton("🗑️ 删除选中")
         self.remove_btn.clicked.connect(self.remove_stock)
@@ -751,6 +842,7 @@ class StockMonitorApp(QMainWindow):
         
         control_layout.addWidget(self.add_btn)
         control_layout.addWidget(self.alert_btn)
+        control_layout.addWidget(self.history_btn)
         control_layout.addWidget(self.remove_btn)
         control_layout.addWidget(self.hide_btn)
         control_layout.addWidget(self.email_btn)
@@ -807,6 +899,28 @@ class StockMonitorApp(QMainWindow):
             self.hide_btn.setText("恢复显示")
         else:
             self.hide_btn.setText("隐藏选中")
+
+    def show_alert_history(self):
+        dialog = AlertHistoryDialog(self.alert_history, self)
+        dialog.exec_()
+        if dialog.is_cleared:
+            self.alert_history = []
+            self.save_config()
+            self.statusBar().showMessage("提醒记录已清空")
+
+    def add_alert_history_record(self, config, data, alert, message, triggered_at):
+        self.alert_history.append(normalize_alert_history({
+            'triggered_at': triggered_at,
+            'code': config.get('code', ''),
+            'name': data.get('name', config.get('name', '')),
+            'alert_type': alert.get('alert_type', 0),
+            'target': alert.get('target', -1),
+            'price': data.get('price', 0),
+            'change_percent': data.get('change_percent', 0),
+            'email_enabled': alert.get('email_enabled', False),
+            'message': message
+        }))
+        self.alert_history = self.alert_history[-1000:]
 
     def edit_email_settings(self):
         dialog = EmailSettingsDialog(self.email_config, self)
@@ -1081,6 +1195,7 @@ class StockMonitorApp(QMainWindow):
             alert_config['active'] = False
             alert_config['triggered_at'] = now_str
             triggered_messages.append(msg)
+            self.add_alert_history_record(config, data, alert_config, msg, now_str)
             if alert_config.get('email_enabled'):
                 self.send_email_alert(msg, config, data, alert_config)
 
