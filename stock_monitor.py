@@ -994,6 +994,16 @@ class StockMonitorApp(QMainWindow):
                 
                 self.table.setItem(row, 2, price_item)
                 self.table.setItem(row, 3, change_item)
+
+                active_alerts = [
+                    alert for alert in stock_config.get('alerts', [])
+                    if alert.get('active', True) and alert.get('target', -1) > 0
+                ]
+                status_text = f"正在监控（{len(active_alerts)}条提醒）" if active_alerts else "正在监控"
+                status_item = QTableWidgetItem(status_text)
+                status_item.setForeground(QColor('#a6e3a1'))
+                status_item.setTextAlignment(Qt.AlignCenter)
+                self.table.setItem(row, 5, status_item)
                 
                 # 检查提醒条件
                 if stock_config:
